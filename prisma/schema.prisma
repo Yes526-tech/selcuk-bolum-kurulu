@@ -1,0 +1,679 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// =========================================================================
+// ENUM TANIMLARI
+// =========================================================================
+
+enum BolumTipi {
+  TEK_ANABILIM_DALI    // Tek Anabilim Dalı: Bölüm Bşk. + TÜM öğretim üyeleri ve görevlileri kurul üyesidir
+  COK_ANABILIM_DALI    // Birden Fazla Anabilim Dalı: Bölüm Bşk. + Bşk. Yrd. + ABD Başkanları kurul üyesidir
+}
+
+enum RolTuru {
+  BOLUM_BASKANI             // Toplantı/gündem onayı, oturum yönetimi, karar kesinleştirme, EBYS üst yazı imza
+  BOLUM_BASKAN_YARDIMCISI   // Gündem önerisi, kurul üyeliği, oylama, başkana vekalet
+  ABD_BASKANI               // ABD adına gündem önerisi sunma, kurul üyeliği, müzakere ve oylama
+  OGRETIM_ELEMANI           // Tek ABD'de tam oy/imza hakkı; çoklu ABD'de gündem teklifi / kurul dışı
+  BOLUM_SEKRETERI           // Gündem taslağı hazırlama, hazirun kaydı, tutanak ve EBYS çıktısı alma
+}
+
+enum ToplantiDurumu {
+  CAGRI_YAPILDI        // Adım 1: Toplantı çağrısı ve gündem tebliğ edildi
+  ERTELENDI            // Adım 2: Salt çoğunluk sağlanamadı, ileri tarihe ertelendi
+  OTURUM_ACILDI        // Adım 3: Çoğunluk sağlandı, oturum açık (Gündem oylaması)
+  MADDELER_GORUSULUYOR // Adım 4: Maddeler müzakere ve oylama aşamasında
+  TUTANAK_HAZIRLANDI   // Adım 5: Resmi Karar Tutanağı derlendi
+  EBYS_SEVK_EDILDI     // Adım 6: Dekanlığa/Müdürlüğe resmi EBYS sevk üst yazısı ile iletildi
+  TAMAMLANDI           // Arşivlendi
+  IPTAL                // İptal edildi
+}
+
+enum KatilimDurumu {
+  KATILDI
+  MAZERETLI
+  KATILMADI
+}
+
+enum KararKategorisi {
+  DERS_GOREVLENDIRME   // 1. Eğitim-Öğretim ve Ders Görevlendirme (Madde 8)
+  MUAFIYET_INTIBAK     // 2. Muafiyet ve İntibak Kararları (Madde 10/5 & 15)
+  STAJ_ISLETME         // 3. Staj ve İşletmede Mesleki Eğitim
+  SINAV_MAZERET        // 4. Sınav Programı ve Mazeret Sınavları
+  KOMISYON_SECIMI      // 5. Komisyon ve Koordinatörlük Seçimi
+  DIGER                // Diğer Akademik ve İdari Konular
+}
+
+enum GundemKabulDurumu {
+  BEKLIYOR
+  KABUL_EDILDI
+  REDDEDILDI_CIKARILDI
+}
+
+enum KararSonucu {
+  BEKLIYOR
+  KABUL_OYBIRLIGI      // Oybirliğiyle Kabul
+  KABUL_OYCOKLUGU      // Oyçokluğuyla Kabul
+  REDDEDILDI           // Reddedildi
+}
+
+enum OyTuru {
+  KABUL
+  RET
+  CEKIMSER
+}
+
+// =========================================================================
+// GÖREV 1.2: ORGANİZASYONEL ŞEMA TABLOLARI
+// =========================================================================
+
+// 1. Fakülte / Yüksekokul Tablosu
+model FakulteYuksekokul {
+  id                 String             @id @default(uuid())
+  kod                String             @unique // örn: "MUH", "SHMYO"
+  ad                 String             // örn: "Mühendislik Fakültesi", "Sağlık Hizmetleri MYO"
+  tur                String             @default("FAKULTE") // FAKULTE, YUKSEKOKUL, ENSTITU
+  dekanMudurUnvanAd  String             @default("Prof. Dr. Ali Kahraman")
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  bolumler           Bolum[]
+
+  @@map("fakulte_yuksekokul")
+}
+
+// 2. Bölüm Tablosu
+model Bolum {
+  id                     String             @id @default(uuid())
+  fakulteId              String
+  fakulte                FakulteYuksekokul  @relation(fields: [fakulteId], references: [id], onDelete: Cascade)
+  kod                    String             @unique // örn: "CENG", "BCT"
+  ad                     String             // örn: "Bilgisayar Mühendisliği Bölümü"
+  ebysBirimKodu          String             @default("302.01.05")
+  bolumTipi              BolumTipi          @default(COK_ANABILIM_DALI) // TEK_ANABILIM_DALI vs COK_ANABILIM_DALI
+  hasMultipleSpecialties Boolean            @default(true) // true: Çok ABD, false: Tek ABD (Madde 15 Kuralı)
+  mevcutAkademikYil      String             @default("2026-2027")
+  mevcutYariyil          String             @default("Güz")
+  bolumBaskaniId         String?            // Atanmış Bölüm Başkanı Personel ID
+  numeratorResetRule     String             @default("HER_AKADEMIK_YIL") // HER_AKADEMIK_YIL vs HER_TAKVIM_YILI
+  lastMeetingNo          Int                @default(0)
+  lastDecisionCounter    Int                @default(0)
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+
+  anabilimDallari        AnabilimDali[]
+  personeller            AkademikPersonel[]
+  toplantilar            Toplanti[]
+  kararSablonlari        KararSablonu[]
+  talepHavuzu            TalepGundemHavuzu[]
+
+  @@map("bolum")
+}
+
+// 3. Anabilim Dalı Tablosu
+model AnabilimDali {
+  id               String             @id @default(uuid())
+  bolumId          String
+  bolum            Bolum              @relation(fields: [bolumId], references: [id], onDelete: Cascade)
+  kod              String?            // örn: "BYAZ", "BDON", "BBIL", "BAGL"
+  ad               String             // örn: "Bilgisayar Yazılımı Anabilim Dalı"
+  baskanPersonelId String?            // Anabilim Dalı Başkanı Personel ID
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  personeller      AkademikPersonel[]
+
+  @@map("anabilim_dali")
+}
+
+// 4. Akademik Personel Tablosu
+model AkademikPersonel {
+  id                 String             @id @default(uuid())
+  bolumId            String
+  bolum              Bolum              @relation(fields: [bolumId], references: [id], onDelete: Cascade)
+  anabilimDaliId     String?
+  anabilimDali       AnabilimDali?      @relation(fields: [anabilimDaliId], references: [id], onDelete: SetNull)
+  unvan              String             // Prof. Dr., Doç. Dr., Dr. Öğr. Üyesi, Öğr. Gör. Dr., Öğr. Gör.
+  ad                 String
+  soyad              String
+  eposta             String             @unique
+  telefon            String?
+  sicilNo            String?
+  rol                RolTuru            @default(OGRETIM_ELEMANI)
+  isActive           Boolean            @default(true)
+  onLeave            Boolean            @default(false) // Görevli / İzinli durumu (Madde 15 nisap hesabından otomatik düşer)
+  leaveReason        String?            // "YÖK Yurtdışı Araştırma İzni / Sağlık İzni"
+  leaveStartDate     DateTime?
+  leaveEndDate       DateTime?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  katilimKayitlari   KatilimTutanagi[]
+  oylar              OylamaDetay[]
+  bildirimler        BildirimLog[]
+
+  @@map("akademik_personel")
+}
+
+// =========================================================================
+// GÖREV 1.3: TOPLANTI VE KARAR VERİTABANI ŞEMASI
+// =========================================================================
+
+// 5. Toplantı Tablosu
+model Toplanti {
+  id                    String             @id @default(uuid())
+  bolumId               String
+  bolum                 Bolum              @relation(fields: [bolumId], references: [id], onDelete: Cascade)
+  toplantiNo            Int                // 1, 2, 3...
+  akademikYil           String             // "2026-2027"
+  yariyil               String             // "Güz" veya "Bahar"
+  baslik                String             // "2026-2027 Eğitim-Öğretim Yılı Güz Yarıyılı Olağan Bölüm Kurulu Toplantısı"
+  tarih                 DateTime           // Toplantı Tarihi
+  saat                  String             @default("10:00") // Toplantı Saati
+  yer                   String             @default("Bölüm Başkanlığı Toplantı Salonu (Bina A, K:3, No:302)")
+  durum                 ToplantiDurumu     @default(CAGRI_YAPILDI)
+  mevcutAdim            Int                @default(1) // 1..6 (İş akışı adımı)
+  
+  // Çoğunluk ve Hazirun Alanları
+  toplamKurulUyeSayisi  Int                @default(0) // Madde 15'e göre oy hakkı olan üye sayısı (N)
+  gerekenSaltCogunluk   Int                @default(0) // floor(N / 2) + 1
+  hazirBulunanUyeSayisi Int                @default(0) // Toplantıda fiilen hazır bulunan üye sayısı
+  cogunlukDurumu        Boolean            @default(false) // Salt çoğunluk sağlandı mı?
+  ertelemeTarihi        DateTime?          // Yetersizlik halinde ertelenen tarih
+  ertelemeGerekcesi     String?            // Erteleme gerekçesi
+  ertelemeTutanakMetni  String?            // Resmi Toplantı Yetersizliği ve Erteleme Tutanağı metni
+
+  // Çağrı Belgesi Alanları
+  ebysCagriNo           String?            // Örn: E-64134190-302.01.05-184910
+  ebysCagriMetni        String?            // Resmi çağrı yazısı metni
+  cagriTebligTarihi     DateTime?
+
+  // EBYS ve Sevk Alanları
+  ebysEvrakNo           String?            // Örn: E-64134190-302.01.05-185420
+  ebysEvrakTarihi       DateTime?
+  ebysDogrulamaKodu     String?            // Doğrulama Kodu: ebys-su-792841-2026
+  ebysBarkod            String?            // SU641341903020105185420
+  nihaiTutanakMetni     String?            // Derlenmiş resmi Karar Tutanağı metni
+  ustYaziMetni          String?            // Dekanlığa Sevk Üst Yazısı metni
+  imzalandigiTarih      DateTime?
+
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  gundemMaddeleri       GundemMaddesi[]
+  katilimTutanaklari    KatilimTutanagi[]
+  kararlar              Karar[]
+  talepler              TalepGundemHavuzu[]
+  bildirimLoglari       BildirimLog[]
+
+  @@map("toplanti")
+}
+
+// 6. Gündem Maddesi Tablosu
+model GundemMaddesi {
+  id                    String             @id @default(uuid())
+  toplantiId            String
+  toplanti              Toplanti           @relation(fields: [toplantiId], references: [id], onDelete: Cascade)
+  siraNo                Int                // 1, 2, 3...
+  kategori              KararKategorisi    @default(DERS_GOREVLENDIRME)
+  baslik                String             // Madde Başlığı
+  talepKaynagi          String             @default("Bölüm Başkanlığı") // Bölüm Başkanı, ABD Bşk., Staj Komisyonu vb.
+  kabulDurumu           GundemKabulDurumu  @default(KABUL_EDILDI) // Gündeme kabul edildi mi, çıkarıldı mı?
+  oylamaNotu            String?            // "Oybirliğiyle gündeme kabul edilmiştir."
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  karar                 Karar?             // Kabul edilip karara bağlandığında oluşan Karar kaydı
+
+  @@map("gundem_maddesi")
+}
+
+// 7. Katılım Tutanağı (Hazirun Cetveli) Tablosu
+model KatilimTutanagi {
+  id                    String             @id @default(uuid())
+  toplantiId            String
+  toplanti              Toplanti           @relation(fields: [toplantiId], references: [id], onDelete: Cascade)
+  personelId            String
+  personel              AkademikPersonel   @relation(fields: [personelId], references: [id], onDelete: Cascade)
+  isBoardMember         Boolean            @default(true) // Yönetmelik Madde 15'e göre asıl kurul üyesi mi?
+  kurulSifati           String             @default("Kurul Üyesi") // "Bölüm Başkanı", "Bölüm Başkan Yrd.", "ABD Başkanı", "Öğretim Üyesi"
+  katilimDurumu         KatilimDurumu      @default(KATILDI)
+  mazeretIzinAciklamasi String?            // "YÖK resmi görevlendirmesi / İzinli"
+  imzaDurumu            Boolean            @default(false) // İmzalandı mı?
+  imzalanmaZamani       DateTime?
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  @@unique([toplantiId, personelId])
+  @@map("katilim_tutanagi")
+}
+
+// 8. Karar Tablosu (2026/01-01 Formatında)
+model Karar {
+  id                    String             @id @default(uuid())
+  toplantiId            String
+  toplanti              Toplanti           @relation(fields: [toplantiId], references: [id], onDelete: Cascade)
+  gundemMaddesiId       String?            @unique
+  gundemMaddesi         GundemMaddesi?     @relation(fields: [gundemMaddesiId], references: [id], onDelete: SetNull)
+  kararNo               String             // Örn: "2026/01-01", "2026/01-02"
+  kategori              KararKategorisi    @default(DERS_GOREVLENDIRME)
+  baslik                String
+  mevzuatDayanagi       String             // S.Ü. Yönetmelik Md. 8, Md. 10/5 & 15 vb.
+  kararMetni            String             // Resmi karar metni
+  oyBirligiCoklugu      KararSonucu        @default(KABUL_OYBIRLIGI)
+  kabulOySayisi         Int                @default(0)
+  retOySayisi           Int                @default(0)
+  cekimserOySayisi      Int                @default(0)
+  muhalefetSerhiGenel   String?            // Genel muhalefet şerhi metni
+  sablonParametreleri   Json?              // Doldurulan parametreler (JSON)
+  ekTabloVerisi         Json?              // Ders dağılımı, muafiyet çizelgesi, staj listesi vb.
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  oylamaDetaylari       OylamaDetay[]
+
+  @@map("karar")
+}
+
+// 9. Oylama Detay Tablosu (Üye Bazlı Oy ve Muhalefet Şerhi)
+model OylamaDetay {
+  id                    String             @id @default(uuid())
+  kararId               String
+  karar                 Karar              @relation(fields: [kararId], references: [id], onDelete: Cascade)
+  personelId            String
+  personel              AkademikPersonel   @relation(fields: [personelId], references: [id], onDelete: Cascade)
+  oy                    OyTuru             @default(KABUL)
+  muhalefetSerhi        String?            // Üyenin şahsi karşı oy gerekçesi
+  oyZamani              DateTime           @default(now())
+
+  @@unique([kararId, personelId])
+  @@map("oylama_detay")
+}
+
+// 10. Karar Şablonu Tablosu (5 Standart Parametrik Şablon)
+model KararSablonu {
+  id                     String             @id @default(uuid())
+  bolumId                String?
+  bolum                  Bolum?             @relation(fields: [bolumId], references: [id], onDelete: Cascade)
+  kategori               KararKategorisi
+  ad                     String             // "Eğitim-Öğretim ve Ders Görevlendirme Şablonu"
+  mevzuatDayanagi        String             // "S.Ü. Ön Lisans ve Lisans Eğitim-Öğretim ve Sınav Yönetmeliği (Madde 8)"
+  sablonMetni            String             // Yer tutuculu metin
+  varsayilanParametreler Json?
+  isSystemDefault        Boolean            @default(true)
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+
+  @@map("karar_sablonu")
+}
+
+// 11. Bekleyen Talep ve Dilekçe Havuzu (Görev 3.1)
+enum TalepDurumu {
+  BEKLIYOR
+  TOPLANTIYA_EKLENDI
+  IPTAL
+}
+
+model TalepGundemHavuzu {
+  id                String          @id @default(uuid())
+  bolumId           String
+  bolum             Bolum           @relation(fields: [bolumId], references: [id], onDelete: Cascade)
+  kategori          KararKategorisi @default(DERS_GOREVLENDIRME)
+  baslik            String
+  talepTuru         String          // "ABD Başkanlığı Yazısı", "Komisyon Raporu", "Öğrenci Dilekçesi", "Dekanlık Havale"
+  basvuranAd       String          // "Prof. Dr. Mustafa Karakaya", "Yunus Emre Sert (233311021)"
+  basvuranNo       String?         // Öğrenci No veya Sicil No
+  aciklama          String?
+  oneriKararMetni   String?
+  ekBelgeAdi        String?         // "transkript.pdf", "staj_defteri.pdf", "saglik_raporu.pdf"
+  durum             TalepDurumu     @default(BEKLIYOR)
+  secilenToplantiId String?
+  eklenenToplanti   Toplanti?       @relation(fields: [secilenToplantiId], references: [id], onDelete: SetNull)
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  @@map("talep_gundem_havuzu")
+}
+
+// 12. Otomatik Toplantı Çağrı ve Bildirim Logları (Görev 3.3)
+model BildirimLog {
+  id              String            @id @default(uuid())
+  toplantiId      String
+  toplanti        Toplanti          @relation(fields: [toplantiId], references: [id], onDelete: Cascade)
+  personelId      String?
+  personel        AkademikPersonel? @relation(fields: [personelId], references: [id], onDelete: SetNull)
+  aliciEposta     String
+  aliciUnvanAd    String
+  bildirimTuru    String            @default("TOPLANTI_CAGRISI") // "TOPLANTI_CAGRISI", "GUNDEM_TEBLIGI", "ERTELEME_BILDIRIMI"
+  baslik          String
+  mesaj           String
+  iletildiMi      Boolean           @default(true)
+  iletilmeZamani  DateTime          @default(now())
+
+  @@map("bildirim_log")
+}
+
+// =========================================================================
+// MEVCUT SİSTEM MODELLERİ (GERİYE DÖNÜK UYUMLULUK VE HIZLI TEST İÇİN)
+// =========================================================================
+
+enum DepartmentType {
+  TEK_ANABILIM_DALI
+  COK_ANABILIM_DALI
+}
+
+enum MemberRole {
+  BOLUM_BASKANI
+  BOLUM_BASKAN_YARDIMCISI
+  ABD_BASKANI
+  OGRETIM_UYESI
+  OGRETIM_GOREVLISI
+  ARASTIRMA_GOREVLISI
+  SEKRETERYA
+}
+
+enum MeetingStatus {
+  CAGRI_YAPILDI
+  ERTELENDI
+  OTURUM_ACILDI
+  MADDELER_GORUSULUYOR
+  TUTANAK_HAZIRLANDI
+  EBYS_SEVK_EDILDI
+  TAMAMLANDI
+  IPTAL
+}
+
+enum AttendanceStatus {
+  KATILDI
+  MAZERETLI
+  KATILMADI
+}
+
+enum DecisionCategory {
+  DERS_GOREVLENDIRME
+  MUAFIYET_INTIBAK
+  STAJ_ISLETME
+  SINAV_MAZERET
+  KOMISYON_SECIMI
+  DIGER
+}
+
+enum DecisionResult {
+  BEKLIYOR
+  KABUL_OYBIRLIGI
+  KABUL_OYCOKLUGU
+  REDDEDILDI
+  GUNDEMDEN_CIKARILDI
+}
+
+enum VoteChoice {
+  KABUL
+  RET
+  CEKIMSER
+}
+
+model Department {
+  id                     String             @id @default(uuid())
+  code                   String             @unique
+  name                   String
+  facultyName            String             @default("Mühendislik Fakültesi")
+  departmentType         DepartmentType     @default(COK_ANABILIM_DALI)
+  ebysUnitCode           String             @default("302.01.05")
+  currentAcademicYear    String             @default("2026-2027")
+  currentTerm            String             @default("Güz")
+  headTitle              String             @default("Prof. Dr.")
+  headName               String             @default("Ahmet Yılmaz")
+  viceHead1              String?            @default("Doç. Dr. Selim Kurt")
+  viceHead2              String?            @default("Dr. Öğr. Üyesi Elif Demir")
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+
+  academicUnits          AcademicUnit[]
+  members                FacultyMember[]
+  meetings               Meeting[]
+  decisionTemplates      DecisionTemplate[]
+  auditLogs              AuditLog[]
+  announcements          Announcement[]
+}
+
+model AcademicUnit {
+  id           String          @id @default(uuid())
+  departmentId String
+  department   Department      @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  name         String
+  shortCode    String?
+  headMemberId String?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  members      FacultyMember[]
+}
+
+model FacultyMember {
+  id               String              @id @default(uuid())
+  departmentId     String
+  department       Department          @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  academicUnitId   String?
+  academicUnit     AcademicUnit?       @relation(fields: [academicUnitId], references: [id], onDelete: SetNull)
+  title            String
+  firstName        String
+  lastName         String
+  email            String              @unique
+  phone            String?
+  sicilNo          String?
+  role             MemberRole          @default(OGRETIM_UYESI)
+  isActive         Boolean             @default(true)
+  onLeave          Boolean             @default(false)
+  leaveReason      String?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  attendances      MeetingAttendance[]
+  votes            ItemVote[]
+  signatures       DecisionSignature[]
+}
+
+model Meeting {
+  id                    String              @id @default(uuid())
+  departmentId          String
+  department            Department          @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  meetingNumber         Int
+  academicYear          String
+  term                  String
+  title                 String
+  scheduledDate         DateTime
+  location              String              @default("Bölüm Başkanlığı Toplantı Salonu (Bina A, K:3, No:302)")
+  status                MeetingStatus       @default(CAGRI_YAPILDI)
+  currentStep           Int                 @default(1)
+  
+  quorumRequired        Int                 @default(0)
+  totalEligibleMembers  Int                 @default(0)
+  actualAttendeesCount  Int                 @default(0)
+  isQuorumMet           Boolean             @default(false)
+  postponedReason       String?
+  postponedToDate       DateTime?
+  postponedMinuteDoc    String?
+
+  callDocumentNo        String?
+  callDocumentText      String?
+  callSentAt            DateTime?
+
+  ebysDocumentNo        String?
+  ebysDocumentDate      DateTime?
+  ebysVerificationCode  String?
+  ebysBarcode           String?
+  finalMinuteText       String?
+  upperLetterText       String?
+  signedAt              DateTime?
+  isAttendanceLocked    Boolean             @default(false)
+  attendanceLockedAt    DateTime?
+  sha256Seal            String?
+  contentDigest         String?
+  isSealed              Boolean             @default(false)
+  cancelledReason       String?
+  cancelledAt           DateTime?
+  reconsideredFromId    String?
+  rowVersion            Int                 @default(1)
+  
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+
+  items                 MeetingItem[]
+  attendances           MeetingAttendance[]
+  attachments           Attachment[]
+  signatures            DecisionSignature[]
+}
+
+model MeetingAttendance {
+  id              String            @id @default(uuid())
+  meetingId       String
+  meeting         Meeting           @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  memberId        String
+  member          FacultyMember     @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  isBoardMember   Boolean           @default(true)
+  boardTitle      String            @default("Kurul Üyesi")
+  status          AttendanceStatus  @default(KATILDI)
+  excuseReason    String?
+  signedAt        DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@unique([meetingId, memberId])
+}
+
+model MeetingItem {
+  id                  String            @id @default(uuid())
+  meetingId           String
+  meeting             Meeting           @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  itemNumber          Int
+  decisionNumber      String?
+  category            DecisionCategory  @default(DERS_GOREVLENDIRME)
+  title               String
+  legalBasis          String
+  description         String?
+  templateData        Json?
+  attachmentsData     Json?
+  decisionText        String
+
+  isAcceptedToAgenda  Boolean           @default(true)
+  agendaVoteNotes     String?
+
+  decisionResult      DecisionResult    @default(BEKLIYOR)
+  votesInFavor        Int               @default(0)
+  votesAgainst        Int               @default(0)
+  votesAbstain        Int               @default(0)
+  dissentingOpinion   String?
+  contentDigest       String?
+  rowVersion          Int               @default(1)
+
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+
+  votes               ItemVote[]
+  attachments         Attachment[]
+}
+
+model ItemVote {
+  id          String        @id @default(uuid())
+  itemId      String
+  item        MeetingItem   @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  memberId    String
+  member      FacultyMember @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  vote        VoteChoice    @default(KABUL)
+  comment     String?
+  createdAt   DateTime      @default(now())
+
+  @@unique([itemId, memberId])
+}
+
+model DecisionTemplate {
+  id              String            @id @default(uuid())
+  departmentId    String?
+  department      Department?       @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  category        DecisionCategory
+  name            String
+  legalBasis      String
+  description     String?
+  templateText    String
+  defaultParams   Json?
+  isSystemDefault Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+}
+
+model AuditLog {
+  id           String      @id @default(uuid())
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  userId       String?
+  userName     String
+  userEmail    String?
+  action       String
+  level        String      @default("INFO")
+  details      String
+  ipAddress    String?     @default("127.0.0.1")
+  createdAt    DateTime    @default(now())
+
+  @@index([departmentId])
+  @@index([createdAt])
+  @@map("AuditLog")
+}
+
+model Attachment {
+  id           String       @id @default(uuid())
+  meetingId    String
+  meeting      Meeting      @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  itemId       String?
+  item         MeetingItem? @relation(fields: [itemId], references: [id], onDelete: SetNull)
+  fileName     String
+  originalName String
+  fileSize     Int
+  mimeType     String
+  sha256Hash   String
+  fileUrl      String
+  createdAt    DateTime     @default(now())
+
+  @@index([meetingId])
+  @@map("Attachment")
+}
+
+model Announcement {
+  id           String      @id @default(uuid())
+  departmentId String
+  department   Department  @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  title        String
+  content      String
+  version      Int         @default(1)
+  isPublished  Boolean     @default(true)
+  publishedAt  DateTime    @default(now())
+  authorName   String
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@index([departmentId])
+  @@map("Announcement")
+}
+
+model DecisionSignature {
+  id              String        @id @default(uuid())
+  meetingId       String
+  meeting         Meeting       @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  memberId        String
+  member          FacultyMember @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  prepToken       String        @unique
+  contentDigest   String
+  signatureDigest String?
+  status          String        @default("PREPARED")
+  signedAt        DateTime?
+  ipAddress       String?       @default("127.0.0.1")
+  createdAt       DateTime      @default(now())
+
+  @@unique([meetingId, memberId])
+  @@map("DecisionSignature")
+}
